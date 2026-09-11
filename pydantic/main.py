@@ -987,7 +987,18 @@ class BaseModel(metaclass=_model_construction.ModelMetaclass):
         # We also update the provided args to use defaults values (`(str, bool)` becomes `(str, bool, int)`):
         typevar_values = tuple(v for v in typevars_map.values())
 
-        if _utils.all_identical(typevars_map.keys(), typevars_map.values()) and typevars_map:
+        # If the arguments are equal to the parameters *and* the model class is still being
+        # created (i.e. `__pydantic_fields__` hasn't been set yet), this is a self-reference such as
+        # `Model[T]` inside the model's own class body. In that case the model itself is returned, as
+        # creating a parametrized submodel here would lead to infinite recursion.
+        # Once the model is created, `Model[T]` produces a real parametrized submodel instead, so that
+        # an explicit parametrization remains distinguishable from a bare (unparametrized) reference
+        # to the model (see https://github.com/pydantic/pydantic/issues/11223).
+        if (
+            _utils.all_identical(typevars_map.keys(), typevars_map.values())
+            and typevars_map
+            and '__pydantic_fields__' not in cls.__dict__
+        ):
             submodel = cls  # if arguments are equal to parameters it's the same object
             _generics.set_cached_generic_type(cls, typevar_values, submodel)
         else:
@@ -995,7 +1006,12 @@ class BaseModel(metaclass=_model_construction.ModelMetaclass):
             if not parent_args:
                 args = typevar_values
             else:
-                args = tuple(_generics.replace_types(arg, typevars_map) for arg in parent_args)
+                args = tuple(
+                    _generics.replace_types(
+                        arg, typevars_map, _self_type=cls.__pydantic_generic_metadata__['origin'] or cls
+                    )
+                    for arg in parent_args
+                )
 
             origin = cls.__pydantic_generic_metadata__['origin'] or cls
             model_name = origin.model_parametrized_name(args)

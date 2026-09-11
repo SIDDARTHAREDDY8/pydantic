@@ -1240,9 +1240,15 @@ def test_nested_identity_parameterization():
     class Model(BaseModel, Generic[T]):
         a: T
 
-    assert Model[T][T][T] is Model
-    assert Model[T] is Model
+    # Parametrizing with the model's own type variables produces a parametrized submodel
+    # (rather than the model itself), so that an explicit parametrization remains
+    # distinguishable from a bare reference to the model
+    # (see https://github.com/pydantic/pydantic/issues/11223):
+    assert Model[T] is not Model
+    assert Model[T][T] is Model[T]
+    assert Model[T][T][T] is Model[T]
     assert Model[T2] is not Model
+    assert Model[T2] is not Model[T]
 
 
 def test_replace_types():
@@ -1688,6 +1694,35 @@ def test_generic_with_partial_callable():
 
     assert Model[str, U].__pydantic_generic_metadata__['parameters'] == (U,)
     assert not Model[str, int].__pydantic_generic_metadata__['parameters']
+
+
+def test_generic_model_bare_reference_not_parametrized() -> None:
+    """https://github.com/pydantic/pydantic/issues/11223
+
+    A bare reference to a generic model should not be parametrized by the type variables
+    of the model being parametrized, even if the same `TypeVar` instances are used.
+    Only explicit parametrizations (e.g. `Model2[T]`) propagate the type variables.
+    """
+    T = TypeVar('T')
+
+    class Model1(BaseModel, Generic[T]):
+        m2: 'Model2'
+        m2_explicit: 'Model2[T]'
+
+    class Model2(BaseModel, Generic[T]):
+        t: T
+
+    # The bare `Model2` reference keeps its type variable unbound (falling back to `Any`),
+    # so `'not_an_int'` is valid:
+    result = Model1[int].model_validate({'m2': {'t': 'not_an_int'}, 'm2_explicit': {'t': 1}})
+    assert result.m2.t == 'not_an_int'
+    assert Model1[int].model_fields['m2'].annotation is Model2
+
+    # ...while the explicit `Model2[T]` parametrization propagates `int`:
+    assert Model1[int].model_fields['m2_explicit'].annotation is Model2[int]
+    with pytest.raises(ValidationError) as exc_info:
+        Model1[int].model_validate({'m2': {'t': 'not_an_int'}, 'm2_explicit': {'t': 'not_an_int'}})
+    assert exc_info.value.errors()[0]['loc'] == ('m2_explicit', 't')
 
 
 def test_generic_recursive_models(create_module):

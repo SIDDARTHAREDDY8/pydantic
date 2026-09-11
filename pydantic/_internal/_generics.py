@@ -254,12 +254,18 @@ def get_model_typevars_map(cls: type[BaseModel]) -> dict[TypeVar, Any]:
     return dict(zip(iter_contained_typevars(origin), args, strict=True))
 
 
-def replace_types(type_: Any, type_map: Mapping[TypeVar, Any] | None) -> Any:
+def replace_types(type_: Any, type_map: Mapping[TypeVar, Any] | None, *, _self_type: Any | None = None) -> Any:
     """Return type with all occurrences of `type_map` keys recursively replaced with their values.
 
     Args:
         type_: The class or generic alias.
         type_map: Mapping from `TypeVar` instance to concrete types.
+        _self_type: The generic model being parametrized, if any. A bare (unparametrized)
+            reference to this model is treated as a self-reference and gets its type variables
+            replaced; a bare reference to any *other* generic model keeps its type variables
+            unbound (they fall back to `Any` during validation), even if the same `TypeVar`
+            instances are used. If not provided, bare model references are parametrized as
+            before (see https://github.com/pydantic/pydantic/issues/11223).
 
     Returns:
         A new type representing the basic structure of `type_` with all
@@ -281,14 +287,14 @@ def replace_types(type_: Any, type_map: Mapping[TypeVar, Any] | None) -> Any:
 
     if typing_objects.is_annotated(origin_type):
         annotated_type, *annotations = type_args
-        annotated_type = replace_types(annotated_type, type_map)
+        annotated_type = replace_types(annotated_type, type_map, _self_type=_self_type)
         # TODO remove parentheses when we drop support for Python 3.10:
         return Annotated[(annotated_type, *annotations)]
 
     # Having type args is a good indicator that this is a typing special form
     # instance or a generic alias of some sort.
     if type_args:
-        resolved_type_args = tuple(replace_types(arg, type_map) for arg in type_args)
+        resolved_type_args = tuple(replace_types(arg, type_map, _self_type=_self_type) for arg in type_args)
         if all_identical(type_args, resolved_type_args):
             # If all arguments are the same, there is no need to modify the
             # type or create a new object at all
@@ -327,13 +333,21 @@ def replace_types(type_: Any, type_map: Mapping[TypeVar, Any] | None) -> Any:
         return origin_type[resolved_type_args[0] if len(resolved_type_args) == 1 else resolved_type_args]
 
     # We handle pydantic generic models separately as they don't have the same
-    # semantics as "typing" classes or generic aliases
-
+    # semantics as "typing" classes or generic aliases.
+    # Explicitly parametrized models (i.e. parametrized submodels, which have
+    # `__pydantic_generic_metadata__['origin']` set) always have their remaining type variables
+    # replaced. A bare reference to a generic model is only parametrized if it refers to the
+    # model being parametrized (a self-reference); otherwise its type variables are left unbound
+    # (they fall back to `Any` during validation), even if the caller happens to use the same
+    # `TypeVar` instances (see https://github.com/pydantic/pydantic/issues/11223).
     if not origin_type and is_model_class(type_):
+        if type_.__pydantic_generic_metadata__['origin'] is None:
+            if _self_type is not None and type_ is not _self_type:
+                return type_
         parameters = type_.__pydantic_generic_metadata__['parameters']
         if not parameters:
             return type_
-        resolved_type_args = tuple(replace_types(t, type_map) for t in parameters)
+        resolved_type_args = tuple(replace_types(t, type_map, _self_type=_self_type) for t in parameters)
         if all_identical(parameters, resolved_type_args):
             return type_
         return type_[resolved_type_args]
@@ -341,7 +355,7 @@ def replace_types(type_: Any, type_map: Mapping[TypeVar, Any] | None) -> Any:
     # Handle special case for typehints that can have lists as arguments.
     # `typing.Callable[[int, str], int]` is an example for this.
     if isinstance(type_, list):
-        resolved_list = [replace_types(element, type_map) for element in type_]
+        resolved_list = [replace_types(element, type_map, _self_type=_self_type) for element in type_]
         if all_identical(type_, resolved_list):
             return type_
         return resolved_list

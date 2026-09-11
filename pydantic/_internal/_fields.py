@@ -485,7 +485,11 @@ def collect_model_fields(  # noqa: C901
                 # from the origin/parent model (e.g. `MyGenericModel`).
                 if typevars_map:
                     field_info = _recreate_field_info(
-                        parent_field_info, ns_resolver=ns_resolver, typevars_map=typevars_map, lenient=True
+                        parent_field_info,
+                        ns_resolver=ns_resolver,
+                        typevars_map=typevars_map,
+                        lenient=True,
+                        _self_type=cls.__pydantic_generic_metadata__['origin'] or cls,
                     )
                 else:
                     field_info = parent_field_info
@@ -562,7 +566,11 @@ def collect_model_fields(  # noqa: C901
             if typevars_map and parent_extra_info.complete:
                 # If not complete, `rebuild_model_fields()` takes care of it:
                 pydantic_extra_info = PydanticExtraInfo(
-                    annotation=_generics.replace_types(parent_extra_info.annotation, typevars_map),
+                    annotation=_generics.replace_types(
+                        parent_extra_info.annotation,
+                        typevars_map,
+                        _self_type=cls.__pydantic_generic_metadata__['origin'] or cls,
+                    ),
                     complete=True,
                 )
             else:
@@ -571,7 +579,9 @@ def collect_model_fields(  # noqa: C901
             ann, complete = type_hints['__pydantic_extra__']
             if complete:
                 # If not complete, `rebuild_model_fields()` takes care of it:
-                ann = _generics.replace_types(ann, typevars_map)
+                ann = _generics.replace_types(
+                    ann, typevars_map, _self_type=cls.__pydantic_generic_metadata__['origin'] or cls
+                )
             pydantic_extra_info = PydanticExtraInfo(
                 annotation=ann,
                 complete=complete,
@@ -609,7 +619,11 @@ def rebuild_model_fields(
                 rebuilt_fields[f_name] = field_info
             else:
                 new_field = _recreate_field_info(
-                    field_info, ns_resolver=ns_resolver, typevars_map=typevars_map, lenient=False
+                    field_info,
+                    ns_resolver=ns_resolver,
+                    typevars_map=typevars_map,
+                    lenient=False,
+                    _self_type=cls.__pydantic_generic_metadata__['origin'] or cls,
                 )
                 update_field_from_config(config_wrapper, f_name, new_field)
                 rebuilt_fields[f_name] = new_field
@@ -620,7 +634,9 @@ def rebuild_model_fields(
                 cls.__pydantic_extra_info__.annotation,
                 *ns_resolver.types_namespace,
             )
-            ann = _generics.replace_types(ann, typevars_map)
+            ann = _generics.replace_types(
+                ann, typevars_map, _self_type=cls.__pydantic_generic_metadata__['origin'] or cls
+            )
             ann = _typing_extra.eval_type(
                 ann,
                 *ns_resolver.types_namespace,
@@ -641,12 +657,13 @@ def _recreate_field_info(
     typevars_map: Mapping[TypeVar, Any],
     *,
     lenient: bool,
+    _self_type: Any | None = None,
 ) -> FieldInfo:
     FieldInfo_ = import_cached_field_info()
 
     existing_desc = field_info.description
     if lenient:
-        ann = _generics.replace_types(field_info._original_annotation, typevars_map)
+        ann = _generics.replace_types(field_info._original_annotation, typevars_map, _self_type=_self_type)
         ann, evaluated = _typing_extra.try_eval_type(
             ann,
             *ns_resolver.types_namespace,
@@ -658,7 +675,7 @@ def _recreate_field_info(
             field_info._original_annotation,
             *ns_resolver.types_namespace,
         )
-        ann = _generics.replace_types(ann, typevars_map)
+        ann = _generics.replace_types(ann, typevars_map, _self_type=_self_type)
         ann = _typing_extra.eval_type(
             ann,
             *ns_resolver.types_namespace,
