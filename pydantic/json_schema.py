@@ -220,6 +220,21 @@ class _DefinitionsRemapping:
         return schema
 
 
+def _enum_key_to_json_string(value: Any) -> str:
+    """Return the string form of an enum value as it appears in a serialized JSON object key.
+
+    JSON object keys are always strings; this mirrors how enum dict keys are serialized
+    (e.g. `True` -> `"true"`, `1` -> `"1"`).
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if value is None:
+        return 'null'
+    return str(value)
+
+
 class GenerateJsonSchema:
     """!!! abstract "Usage Documentation"
         [Customizing the JSON Schema Generation Process](../concepts/json_schema.md#customizing-the-json-schema-generation-process)
@@ -1227,6 +1242,19 @@ class GenerateJsonSchema:
             # Note that we avoid calling `self.resolve_ref_schema`, as it might not exist yet.
             keys_pattern = None
 
+        # JSON object keys are always strings, so when the dict keys are a non-string
+        # enum, the referenced enum definition (e.g. `{"type": "integer", ...}`) would
+        # reject every valid document. Emit the keys in their serialized string form instead.
+        enum_keys: list[str] | None = None
+        keys_core_schema = schema.get('keys_schema')
+        if isinstance(keys_core_schema, dict) and keys_core_schema.get('type') == 'enum':
+            enum_cls = keys_core_schema['cls']
+            if not issubclass(enum_cls, str):
+                enum_keys = [
+                    _enum_key_to_json_string(member.value)
+                    for member in keys_core_schema.get('members', [])
+                ]
+
         values_schema = self.generate_inner(schema['values_schema']).copy() if 'values_schema' in schema else {}
         # don't give a title to additionalProperties:
         values_schema.pop('title', None)
@@ -1246,7 +1274,10 @@ class GenerateJsonSchema:
             or '$ref' in keys_schema
         ):
             keys_schema.pop('type', None)
-            json_schema['propertyNames'] = keys_schema
+            if enum_keys is not None:
+                json_schema['propertyNames'] = {'type': 'string', 'enum': enum_keys}
+            else:
+                json_schema['propertyNames'] = keys_schema
 
         self.update_with_validations(json_schema, schema, self.ValidationsMapping.object)
         return json_schema

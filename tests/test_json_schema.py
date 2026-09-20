@@ -1889,6 +1889,53 @@ def test_enum_dict():
     }
 
 
+def test_enum_int_dict_keys_have_string_property_names():
+    """Non-string enum dict keys serialize as strings, so `propertyNames` must be string-typed.
+
+    See https://github.com/pydantic/pydantic/issues/11967: emitting the integer-typed
+    enum definition as `propertyNames` produces a schema no valid document can satisfy,
+    as JSON object keys are always strings.
+    """
+
+    class MyEnum(IntEnum):
+        FOO = 1
+        BAR = 2
+
+    class MyModel(BaseModel):
+        enum_dict: dict[MyEnum, str]
+
+    assert MyModel.model_json_schema()['properties']['enum_dict']['propertyNames'] == {
+        'type': 'string',
+        'enum': ['1', '2'],
+    }
+    # No dangling reference is left behind when the enum definition is unused:
+    assert '$defs' not in MyModel.model_json_schema()
+    # The schema accepts what serialization actually emits:
+    assert list(json.loads(MyModel(enum_dict={MyEnum.FOO: 'x'}).model_dump_json())['enum_dict']) == ['1']
+
+
+def test_enum_int_dict_keys_and_values_share_definition():
+    """The enum definition stays integer-typed for value positions when also used as a dict key."""
+
+    class MyEnum(IntEnum):
+        FOO = 1
+        BAR = 2
+
+    class MyModel(BaseModel):
+        enum_dict: dict[MyEnum, str]
+        enum_value: MyEnum
+
+    assert MyModel.model_json_schema()['$defs']['MyEnum'] == {
+        'enum': [1, 2],
+        'title': 'MyEnum',
+        'type': 'integer',
+    }
+    assert MyModel.model_json_schema()['properties']['enum_dict']['propertyNames'] == {
+        'type': 'string',
+        'enum': ['1', '2'],
+    }
+
+
 def test_property_names_constraint():
     class MyModel(BaseModel):
         my_dict: dict[Annotated[str, StringConstraints(max_length=1)], str]
